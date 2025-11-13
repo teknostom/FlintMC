@@ -1,49 +1,54 @@
 {
+  "flintVersion": "0.1",
   "name": "fence_connects_to_block",
   "description": "Verify that an oak fence connects to a solid block placed adjacent to it",
-  "cleanup": {
-    "from": [-5, 95, -5],
-    "to": [5, 105, 5]
+  "tags": ["fences"],
+  "dependencies": ["basic_block_placement"],
+  "setup": {
+    "cleanup": {
+      "region": [[-5, 95, -5], [5, 105, 5]]
+    }
   },
-  "actions": [
+  "timeline": [
     {
-      "tick": 0,
-      "action": "setblock",
+      "at": 0,
+      "do": "place",
       "pos": [0, 100, 0],
       "block": "minecraft:oak_fence"
     },
     {
-      "tick": 1,
-      "action": "assert_block",
-      "pos": [0, 100, 0],
-      "block": "minecraft:oak_fence"
+      "at": 1,
+      "do": "assert",
+      "checks": [
+        {"pos": [0, 100, 0], "is": "minecraft:oak_fence"}
+      ]
     },
     {
-      "tick": 1,
-      "action": "assert_block_state",
+      "at": 1,
+      "do": "assert_state",
       "pos": [0, 100, 0],
-      "property": "east",
-      "value": "false"
+      "state": "east",
+      "values": ["false"]
     },
     {
-      "tick": 1,
-      "action": "assert_block_state",
+      "at": 1,
+      "do": "assert_state",
       "pos": [0, 100, 0],
-      "property": "west",
-      "value": "false"
+      "state": "west",
+      "values": ["false"]
     },
     {
-      "tick": 2,
-      "action": "setblock",
+      "at": 2,
+      "do": "place",
       "pos": [1, 100, 0],
       "block": "minecraft:stone"
     },
     {
-      "tick": 4,
-      "action": "assert_block_state",
+      "at": 4,
+      "do": "assert_state",
       "pos": [0, 100, 0],
-      "property": "east",
-      "value": "true"
+      "state": "east",
+      "values": ["true"]
     }
   ]
 }

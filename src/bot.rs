@@ -2,7 +2,6 @@ use azalea::prelude::*;
 use anyhow::Result;
 use std::sync::Arc;
 use parking_lot::RwLock;
-use futures::FutureExt;
 
 #[derive(Clone, Component)]
 struct State {

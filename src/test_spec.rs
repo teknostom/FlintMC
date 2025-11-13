@@ -2,48 +2,94 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TestSpec {
+    #[serde(default)]
+    pub flint_version: Option<String>,
     pub name: String,
     pub description: Option<String>,
-    pub actions: Vec<Action>,
     #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub setup: Option<SetupSpec>,
+    pub timeline: Vec<TimelineEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetupSpec {
     pub cleanup: Option<CleanupSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanupSpec {
-    pub from: [i32; 3],
-    pub to: [i32; 3],
+    pub region: [[i32; 3]; 2],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Action {
-    pub tick: u32,
+pub struct TimelineEntry {
+    #[serde(rename = "at")]
+    pub at: TickSpec,
+    #[serde(rename = "do")]
+    pub action_name: String,
     #[serde(flatten)]
     pub action_type: ActionType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
+#[serde(untagged)]
+pub enum TickSpec {
+    Single(u32),
+    Multiple(Vec<u32>),
+}
+
+impl TickSpec {
+    pub fn to_vec(&self) -> Vec<u32> {
+        match self {
+            TickSpec::Single(t) => vec![*t],
+            TickSpec::Multiple(v) => v.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum ActionType {
-    Setblock {
+    Place {
         pos: [i32; 3],
         block: String,
+    },
+    PlaceEach {
+        blocks: Vec<BlockPlacement>,
     },
     Fill {
-        from: [i32; 3],
-        to: [i32; 3],
-        block: String,
+        region: [[i32; 3]; 2],
+        with: String,
     },
-    AssertBlock {
+    Remove {
         pos: [i32; 3],
-        block: String,
     },
-    AssertBlockState {
+    Assert {
+        checks: Vec<BlockCheck>,
+    },
+    AssertState {
         pos: [i32; 3],
-        property: String,
-        value: String,
+        state: String,
+        values: Vec<String>,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockPlacement {
+    pub pos: [i32; 3],
+    pub block: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockCheck {
+    pub pos: [i32; 3],
+    pub is: String,
 }
 
 impl TestSpec {
@@ -54,6 +100,17 @@ impl TestSpec {
     }
 
     pub fn max_tick(&self) -> u32 {
-        self.actions.iter().map(|a| a.tick).max().unwrap_or(0)
+        self.timeline
+            .iter()
+            .flat_map(|entry| entry.at.to_vec())
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn cleanup_region(&self) -> Option<[[i32; 3]; 2]> {
+        self.setup
+            .as_ref()
+            .and_then(|s| s.cleanup.as_ref())
+            .map(|c| c.region)
     }
 }

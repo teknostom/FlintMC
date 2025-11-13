@@ -1,5 +1,5 @@
 use crate::bot::TestBot;
-use crate::test_spec::{Action, ActionType, TestSpec};
+use crate::test_spec::{ActionType, TestSpec, TimelineEntry};
 use anyhow::Result;
 use colored::Colorize;
 use std::collections::HashMap;
@@ -29,24 +29,33 @@ impl TestExecutor {
         println!("  Timeline: {} ticks\n", max_tick);
 
         // Clean up test area if specified
-        if let Some(cleanup) = &test.cleanup {
+        if let Some(region) = test.cleanup_region() {
             println!("  {} Cleaning test area...", "→".blue());
             let cmd = format!(
                 "fill {} {} {} {} {} {} air",
-                cleanup.from[0], cleanup.from[1], cleanup.from[2],
-                cleanup.to[0], cleanup.to[1], cleanup.to[2]
+                region[0][0], region[0][1], region[0][2],
+                region[1][0], region[1][1], region[1][2]
             );
             self.bot.send_command(&cmd).await?;
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
         }
 
-        // Group actions by tick
-        let mut actions_by_tick: HashMap<u32, Vec<&Action>> = HashMap::new();
-        for action in &test.actions {
+        // Expand timeline entries with multiple ticks into separate entries
+        let mut expanded_entries = Vec::new();
+        for entry in &test.timeline {
+            let ticks = entry.at.to_vec();
+            for (idx, tick) in ticks.iter().enumerate() {
+                expanded_entries.push((*tick, entry, idx));
+            }
+        }
+
+        // Group by tick
+        let mut actions_by_tick: HashMap<u32, Vec<(&TimelineEntry, usize)>> = HashMap::new();
+        for (tick, entry, idx) in expanded_entries {
             actions_by_tick
-                .entry(action.tick)
+                .entry(tick)
                 .or_insert_with(Vec::new)
-                .push(action);
+                .push((entry, idx));
         }
 
         // Freeze time
@@ -59,9 +68,9 @@ impl TestExecutor {
 
         // Execute actions tick by tick
         while current_tick <= max_tick {
-            if let Some(actions) = actions_by_tick.get(&current_tick) {
-                for action in actions {
-                    match self.execute_action(current_tick, action).await {
+            if let Some(entries) = actions_by_tick.get(&current_tick) {
+                for (entry, value_idx) in entries {
+                    match self.execute_action(current_tick, entry, *value_idx).await {
                         Ok(true) => {
                             passed += 1;
                         }
@@ -93,12 +102,12 @@ impl TestExecutor {
         self.bot.send_command("tick unfreeze").await?;
 
         // Clean up test area after test
-        if let Some(cleanup) = &test.cleanup {
+        if let Some(region) = test.cleanup_region() {
             println!("\n  {} Cleaning up test area...", "→".blue());
             let cmd = format!(
                 "fill {} {} {} {} {} {} air",
-                cleanup.from[0], cleanup.from[1], cleanup.from[2],
-                cleanup.to[0], cleanup.to[1], cleanup.to[2]
+                region[0][0], region[0][1], region[0][2],
+                region[1][0], region[1][1], region[1][2]
             );
             self.bot.send_command(&cmd).await?;
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -125,13 +134,13 @@ impl TestExecutor {
         })
     }
 
-    async fn execute_action(&mut self, tick: u32, action: &Action) -> Result<bool> {
-        match &action.action_type {
-            ActionType::Setblock { pos, block } => {
+    async fn execute_action(&mut self, tick: u32, entry: &TimelineEntry, value_idx: usize) -> Result<bool> {
+        match &entry.action_type {
+            ActionType::Place { pos, block } => {
                 let cmd = format!("setblock {} {} {} {}", pos[0], pos[1], pos[2], block);
                 self.bot.send_command(&cmd).await?;
                 println!(
-                    "    {} Tick {}: setblock at [{}, {}, {}] = {}",
+                    "    {} Tick {}: place at [{}, {}, {}] = {}",
                     "→".blue(),
                     tick,
                     pos[0],
@@ -142,100 +151,138 @@ impl TestExecutor {
                 Ok(false)
             }
 
-            ActionType::Fill { from, to, block } => {
+            ActionType::PlaceEach { blocks } => {
+                for placement in blocks {
+                    let cmd = format!(
+                        "setblock {} {} {} {}",
+                        placement.pos[0], placement.pos[1], placement.pos[2], placement.block
+                    );
+                    self.bot.send_command(&cmd).await?;
+                    println!(
+                        "    {} Tick {}: place at [{}, {}, {}] = {}",
+                        "→".blue(),
+                        tick,
+                        placement.pos[0],
+                        placement.pos[1],
+                        placement.pos[2],
+                        placement.block.dimmed()
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                }
+                Ok(false)
+            }
+
+            ActionType::Fill { region, with } => {
                 let cmd = format!(
                     "fill {} {} {} {} {} {} {}",
-                    from[0], from[1], from[2], to[0], to[1], to[2], block
+                    region[0][0], region[0][1], region[0][2],
+                    region[1][0], region[1][1], region[1][2],
+                    with
                 );
                 self.bot.send_command(&cmd).await?;
                 println!(
                     "    {} Tick {}: fill [{},{},{}] to [{},{},{}] = {}",
                     "→".blue(),
                     tick,
-                    from[0],
-                    from[1],
-                    from[2],
-                    to[0],
-                    to[1],
-                    to[2],
-                    block.dimmed()
+                    region[0][0],
+                    region[0][1],
+                    region[0][2],
+                    region[1][0],
+                    region[1][1],
+                    region[1][2],
+                    with.dimmed()
                 );
                 Ok(false)
             }
 
-            ActionType::AssertBlock { pos, block } => {
-                // Wait a moment for server to send block update
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-                let actual_block = self.bot.get_block(*pos).await?;
-
-                let expected_name = block.trim_start_matches("minecraft:");
-                let success = if let Some(ref actual) = actual_block {
-                    // Convert to lowercase and check if it contains the expected block name
-                    // Handle both "Stone" and "stone", "OakPlanks" and "oak_planks"
-                    let actual_lower = actual.to_lowercase();
-                    let expected_lower = expected_name.to_lowercase().replace("_", "");
-                    actual_lower.contains(&expected_lower) ||
-                    actual_lower.replace("_", "").contains(&expected_lower)
-                } else {
-                    false
-                };
-
-                if success {
-                    println!(
-                        "    {} Tick {}: assert block at [{}, {}, {}] is {}",
-                        "✓".green(),
-                        tick,
-                        pos[0],
-                        pos[1],
-                        pos[2],
-                        block.dimmed()
-                    );
-                    Ok(true)
-                } else {
-                    anyhow::bail!(
-                        "Block at [{}, {}, {}] is not {} (got {:?})",
-                        pos[0],
-                        pos[1],
-                        pos[2],
-                        block,
-                        actual_block
-                    );
-                }
+            ActionType::Remove { pos } => {
+                let cmd = format!("setblock {} {} {} air", pos[0], pos[1], pos[2]);
+                self.bot.send_command(&cmd).await?;
+                println!(
+                    "    {} Tick {}: remove at [{}, {}, {}]",
+                    "→".blue(),
+                    tick,
+                    pos[0],
+                    pos[1],
+                    pos[2]
+                );
+                Ok(false)
             }
 
-            ActionType::AssertBlockState { pos, property, value } => {
+            ActionType::Assert { checks } => {
                 // Wait a moment for server to send block update
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-                let actual_value = self.bot.get_block_state_property(*pos, property).await?;
+                for check in checks {
+                    let actual_block = self.bot.get_block(check.pos).await?;
+
+                    let expected_name = check.is.trim_start_matches("minecraft:");
+                    let success = if let Some(ref actual) = actual_block {
+                        let actual_lower = actual.to_lowercase();
+                        let expected_lower = expected_name.to_lowercase().replace("_", "");
+                        actual_lower.contains(&expected_lower) ||
+                        actual_lower.replace("_", "").contains(&expected_lower)
+                    } else {
+                        false
+                    };
+
+                    if success {
+                        println!(
+                            "    {} Tick {}: assert block at [{}, {}, {}] is {}",
+                            "✓".green(),
+                            tick,
+                            check.pos[0],
+                            check.pos[1],
+                            check.pos[2],
+                            check.is.dimmed()
+                        );
+                    } else {
+                        anyhow::bail!(
+                            "Block at [{}, {}, {}] is not {} (got {:?})",
+                            check.pos[0],
+                            check.pos[1],
+                            check.pos[2],
+                            check.is,
+                            actual_block
+                        );
+                    }
+                }
+                Ok(true)
+            }
+
+            ActionType::AssertState { pos, state, values } => {
+                // Wait a moment for server to send block update
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                let actual_value = self.bot.get_block_state_property(*pos, state).await?;
+                let expected_value = &values[value_idx];
 
                 let success = if let Some(ref actual) = actual_value {
-                    actual.contains(value)
+                    actual.contains(expected_value)
                 } else {
                     false
                 };
 
                 if success {
                     println!(
-                        "    {} Tick {}: assert block at [{}, {}, {}] property {} = {}",
+                        "    {} Tick {}: assert block at [{}, {}, {}] state {} = {}",
                         "✓".green(),
                         tick,
                         pos[0],
                         pos[1],
                         pos[2],
-                        property.dimmed(),
-                        value.dimmed()
+                        state.dimmed(),
+                        expected_value.dimmed()
                     );
                     Ok(true)
                 } else {
                     anyhow::bail!(
-                        "Block at [{}, {}, {}] property {} is not {} (got {:?})",
+                        "Block at [{}, {}, {}] state {} is not {} (got {:?})",
                         pos[0],
                         pos[1],
                         pos[2],
-                        property,
-                        value,
+                        state,
+                        expected_value,
                         actual_value
                     );
                 }

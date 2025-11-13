@@ -1,36 +1,40 @@
 {
+  "flintVersion": "0.1",
   "name": "fence_connects_to_fence",
   "description": "Verify that two adjacent oak fences connect to each other",
-  "cleanup": {
-    "from": [0, 95, 0],
-    "to": [10, 105, 10]
+  "tags": ["fences"],
+  "dependencies": ["basic_block_placement"],
+  "setup": {
+    "cleanup": {
+      "region": [[0, 95, 0], [10, 105, 10]]
+    }
   },
-  "actions": [
+  "timeline": [
     {
-      "tick": 0,
-      "action": "setblock",
+      "at": 0,
+      "do": "place",
       "pos": [5, 100, 5],
       "block": "minecraft:oak_fence"
     },
     {
-      "tick": 1,
-      "action": "setblock",
+      "at": 1,
+      "do": "place",
       "pos": [6, 100, 5],
       "block": "minecraft:oak_fence"
     },
     {
-      "tick": 3,
-      "action": "assert_block_state",
+      "at": 3,
+      "do": "assert_state",
       "pos": [5, 100, 5],
-      "property": "east",
-      "value": "true"
+      "state": "east",
+      "values": ["true"]
     },
     {
-      "tick": 3,
-      "action": "assert_block_state",
+      "at": 3,
+      "do": "assert_state",
       "pos": [6, 100, 5],
-      "property": "west",
-      "value": "true"
+      "state": "west",
+      "values": ["true"]
     }
   ]
 }

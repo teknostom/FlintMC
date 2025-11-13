@@ -45,30 +45,35 @@ Each test is a JSON file with the following structure:
 
 ```json
 {
+  "flintVersion": "0.1",
   "name": "test_name",
   "description": "Optional description",
-  "cleanup": {
-    "from": [x1, y1, z1],
-    "to": [x2, y2, z2]
+  "tags": ["tag1", "tag2"],
+  "dependencies": ["optional_dependency1", "optional_dependency2"],
+  "setup": {
+    "cleanup": {
+      "region": [[x1, y1, z1], [x2, y2, z2]]
+    }
   },
-  "actions": [
+  "timeline": [
     {
-      "tick": 0,
-      "action": "setblock",
+      "at": 0,
+      "do": "place",
       "pos": [x, y, z],
       "block": "minecraft:block_id"
     },
     {
-      "tick": 1,
-      "action": "assert_block",
-      "pos": [x, y, z],
-      "block": "minecraft:block_id"
+      "at": 1,
+      "do": "assert",
+      "checks": [
+        {"pos": [x, y, z], "is": "minecraft:block_id"}
+      ]
     }
   ]
 }
 ```
 
-The `cleanup` field is optional. If specified, the framework will:
+The `setup.cleanup` field is optional. If specified, the framework will:
 1. Fill the area with air **before** the test runs
 2. Fill the area with air **after** the test completes
 
@@ -78,47 +83,79 @@ This ensures tests don't interfere with each other.
 
 ### Block Operations
 
-**setblock** - Place a single block
+**place** - Place a single block
 ```json
 {
-  "tick": 0,
-  "action": "setblock",
+  "at": 0,
+  "do": "place",
   "pos": [x, y, z],
   "block": "minecraft:block_id"
+}
+```
+
+**place_each** - Place multiple blocks
+```json
+{
+  "at": 0,
+  "do": "place_each",
+  "blocks": [
+    {"pos": [x1, y1, z1], "block": "minecraft:block_id"},
+    {"pos": [x2, y2, z2], "block": "minecraft:block_id"}
+  ]
 }
 ```
 
 **fill** - Fill a region with blocks
 ```json
 {
-  "tick": 0,
-  "action": "fill",
-  "from": [x1, y1, z1],
-  "to": [x2, y2, z2],
-  "block": "minecraft:block_id"
+  "at": 0,
+  "do": "fill",
+  "region": [[x1, y1, z1], [x2, y2, z2]],
+  "with": "minecraft:block_id"
+}
+```
+
+**remove** - Remove a block (replace with air)
+```json
+{
+  "at": 0,
+  "do": "remove",
+  "pos": [x, y, z]
 }
 ```
 
 ### Assertions
 
-**assert_block** - Check block type at position
+**assert** - Check block type(s) at position(s)
 ```json
 {
-  "tick": 1,
-  "action": "assert_block",
-  "pos": [x, y, z],
-  "block": "minecraft:block_id"
+  "at": 1,
+  "do": "assert",
+  "checks": [
+    {"pos": [x, y, z], "is": "minecraft:block_id"}
+  ]
 }
 ```
 
-**assert_block_state** - Check block property value
+**assert_state** - Check block property value(s)
 ```json
 {
-  "tick": 1,
-  "action": "assert_block_state",
+  "at": 1,
+  "do": "assert_state",
   "pos": [x, y, z],
-  "property": "property_name",
-  "value": "expected_value"
+  "state": "property_name",
+  "values": ["expected_value"]
+}
+```
+
+For multiple ticks, use an array:
+```json
+{
+  "at": [1, 2, 3],
+  "do": "assert_state",
+  "pos": [x, y, z],
+  "state": "powered",
+  "values": ["false", "true", "false"]
 }
 ```
 

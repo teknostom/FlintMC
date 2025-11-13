@@ -1,48 +1,53 @@
 {
+  "flintVersion": "0.1",
   "name": "lever_powers_adjacent_block",
   "description": "Verify that a lever can be placed and powers an adjacent block when activated",
-  "cleanup": {
-    "from": [5, 95, 5],
-    "to": [15, 105, 15]
+  "tags": ["redstone"],
+  "dependencies": ["basic_block_placement"],
+  "setup": {
+    "cleanup": {
+      "region": [[5, 95, 5], [15, 105, 15]]
+    }
   },
-  "actions": [
+  "timeline": [
     {
-      "tick": 0,
-      "action": "setblock",
+      "at": 0,
+      "do": "place",
       "pos": [10, 100, 10],
       "block": "minecraft:stone"
     },
     {
-      "tick": 1,
-      "action": "setblock",
+      "at": 1,
+      "do": "place",
       "pos": [10, 101, 10],
       "block": "minecraft:lever[powered=false,face=floor]"
     },
     {
-      "tick": 2,
-      "action": "assert_block",
-      "pos": [10, 101, 10],
-      "block": "minecraft:lever"
+      "at": 2,
+      "do": "assert",
+      "checks": [
+        {"pos": [10, 101, 10], "is": "minecraft:lever"}
+      ]
     },
     {
-      "tick": 2,
-      "action": "assert_block_state",
+      "at": 2,
+      "do": "assert_state",
       "pos": [10, 101, 10],
-      "property": "powered",
-      "value": "false"
+      "state": "powered",
+      "values": ["false"]
     },
     {
-      "tick": 3,
-      "action": "setblock",
+      "at": 3,
+      "do": "place",
       "pos": [10, 101, 10],
       "block": "minecraft:lever[powered=true,face=floor]"
     },
     {
-      "tick": 5,
-      "action": "assert_block_state",
+      "at": 5,
+      "do": "assert_state",
       "pos": [10, 101, 10],
-      "property": "powered",
-      "value": "true"
+      "state": "powered",
+      "values": ["true"]
     }
   ]
 }
