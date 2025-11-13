@@ -6,17 +6,171 @@ use std::collections::HashMap;
 
 pub struct TestExecutor {
     bot: TestBot,
+    offset: [i32; 3],
 }
 
 impl TestExecutor {
     pub fn new() -> Self {
         Self {
             bot: TestBot::new(),
+            offset: [0, 0, 0],
         }
+    }
+
+    pub fn set_offset(&mut self, offset: [i32; 3]) {
+        self.offset = offset;
+    }
+
+    fn apply_offset(&self, pos: [i32; 3]) -> [i32; 3] {
+        [
+            pos[0] + self.offset[0],
+            pos[1] + self.offset[1],
+            pos[2] + self.offset[2],
+        ]
     }
 
     pub async fn connect(&mut self, server: &str) -> Result<()> {
         self.bot.connect(server).await
+    }
+
+    pub async fn run_tests_parallel(&mut self, tests_with_offsets: &[(TestSpec, [i32; 3])]) -> Result<Vec<TestResult>> {
+        println!("{} Running {} tests in parallel\n", "→".blue().bold(), tests_with_offsets.len());
+
+        // Build global merged timeline
+        let mut global_timeline: HashMap<u32, Vec<(usize, &TimelineEntry, usize)>> = HashMap::new();
+        let mut max_global_tick = 0;
+
+        for (test_idx, (test, _offset)) in tests_with_offsets.iter().enumerate() {
+            let max_tick = test.max_tick();
+            if max_tick > max_global_tick {
+                max_global_tick = max_tick;
+            }
+
+            // Expand timeline entries with multiple ticks
+            for entry in &test.timeline {
+                let ticks = entry.at.to_vec();
+                for (value_idx, tick) in ticks.iter().enumerate() {
+                    global_timeline
+                        .entry(*tick)
+                        .or_insert_with(Vec::new)
+                        .push((test_idx, entry, value_idx));
+                }
+            }
+        }
+
+        println!("  Global timeline: {} ticks", max_global_tick);
+        println!("  {} unique tick steps with actions\n", global_timeline.len());
+
+        // Clean all test areas before starting
+        println!("{} Cleaning all test areas...", "→".blue());
+        for (_test_idx, (test, offset)) in tests_with_offsets.iter().enumerate() {
+            self.set_offset(*offset);
+            let region = test.cleanup_region();
+            let world_min = self.apply_offset(region[0]);
+            let world_max = self.apply_offset(region[1]);
+            let cmd = format!(
+                "fill {} {} {} {} {} {} air",
+                world_min[0], world_min[1], world_min[2],
+                world_max[0], world_max[1], world_max[2]
+            );
+            self.bot.send_command(&cmd).await?;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        // Freeze time globally
+        self.bot.send_command("tick freeze").await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Track results per test
+        let mut test_results: Vec<(usize, usize)> = vec![(0, 0); tests_with_offsets.len()]; // (passed, failed)
+
+        // Execute merged timeline
+        let mut current_tick = 0;
+        while current_tick <= max_global_tick {
+            if let Some(entries) = global_timeline.get(&current_tick) {
+                for (test_idx, entry, value_idx) in entries {
+                    let (test, offset) = &tests_with_offsets[*test_idx];
+                    self.set_offset(*offset);
+
+                    match self.execute_action(current_tick, entry, *value_idx).await {
+                        Ok(true) => {
+                            test_results[*test_idx].0 += 1; // increment passed
+                        }
+                        Ok(false) => {
+                            // Non-assertion action
+                        }
+                        Err(e) => {
+                            test_results[*test_idx].1 += 1; // increment failed
+                            println!(
+                                "    {} [{}] Tick {}: {}",
+                                "✗".red().bold(),
+                                test.name,
+                                current_tick,
+                                e.to_string().red()
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Step to next tick
+            if current_tick < max_global_tick {
+                self.bot.send_command("tick step 1").await?;
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            }
+            current_tick += 1;
+        }
+
+        // Unfreeze time
+        self.bot.send_command("tick unfreeze").await?;
+
+        // Clean all test areas after completion
+        println!("\n{} Cleaning up all test areas...", "→".blue());
+        for (_test_idx, (test, offset)) in tests_with_offsets.iter().enumerate() {
+            self.set_offset(*offset);
+            let region = test.cleanup_region();
+            let world_min = self.apply_offset(region[0]);
+            let world_max = self.apply_offset(region[1]);
+            let cmd = format!(
+                "fill {} {} {} {} {} {} air",
+                world_min[0], world_min[1], world_min[2],
+                world_max[0], world_max[1], world_max[2]
+            );
+            self.bot.send_command(&cmd).await?;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        // Build results
+        let results: Vec<TestResult> = tests_with_offsets
+            .iter()
+            .enumerate()
+            .map(|(idx, (test, _))| {
+                let (passed, failed) = test_results[idx];
+                let success = failed == 0;
+
+                println!();
+                if success {
+                    println!("  {} [{}] Test passed: {} assertions", "✓".green().bold(), test.name, passed);
+                } else {
+                    println!(
+                        "  {} [{}] Test failed: {} passed, {} failed",
+                        "✗".red().bold(),
+                        test.name,
+                        passed,
+                        failed
+                    );
+                }
+
+                TestResult {
+                    test_name: test.name.clone(),
+                    passed,
+                    failed,
+                    success,
+                }
+            })
+            .collect();
+
+        Ok(results)
     }
 
     pub async fn run_test(&mut self, test: &TestSpec) -> Result<TestResult> {
@@ -28,17 +182,18 @@ impl TestExecutor {
         let max_tick = test.max_tick();
         println!("  Timeline: {} ticks\n", max_tick);
 
-        // Clean up test area if specified
-        if let Some(region) = test.cleanup_region() {
-            println!("  {} Cleaning test area...", "→".blue());
-            let cmd = format!(
-                "fill {} {} {} {} {} {} air",
-                region[0][0], region[0][1], region[0][2],
-                region[1][0], region[1][1], region[1][2]
-            );
-            self.bot.send_command(&cmd).await?;
-            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-        }
+        // Clean up test area before test
+        let region = test.cleanup_region();
+        let world_min = self.apply_offset(region[0]);
+        let world_max = self.apply_offset(region[1]);
+        println!("  {} Cleaning test area...", "→".blue());
+        let cmd = format!(
+            "fill {} {} {} {} {} {} air",
+            world_min[0], world_min[1], world_min[2],
+            world_max[0], world_max[1], world_max[2]
+        );
+        self.bot.send_command(&cmd).await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         // Expand timeline entries with multiple ticks into separate entries
         let mut expanded_entries = Vec::new();
@@ -102,16 +257,17 @@ impl TestExecutor {
         self.bot.send_command("tick unfreeze").await?;
 
         // Clean up test area after test
-        if let Some(region) = test.cleanup_region() {
-            println!("\n  {} Cleaning up test area...", "→".blue());
-            let cmd = format!(
-                "fill {} {} {} {} {} {} air",
-                region[0][0], region[0][1], region[0][2],
-                region[1][0], region[1][1], region[1][2]
-            );
-            self.bot.send_command(&cmd).await?;
-            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-        }
+        let region = test.cleanup_region();
+        let world_min = self.apply_offset(region[0]);
+        let world_max = self.apply_offset(region[1]);
+        println!("\n  {} Cleaning up test area...", "→".blue());
+        let cmd = format!(
+            "fill {} {} {} {} {} {} air",
+            world_min[0], world_min[1], world_min[2],
+            world_max[0], world_max[1], world_max[2]
+        );
+        self.bot.send_command(&cmd).await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         let success = failed == 0;
         println!();
@@ -137,7 +293,8 @@ impl TestExecutor {
     async fn execute_action(&mut self, tick: u32, entry: &TimelineEntry, value_idx: usize) -> Result<bool> {
         match &entry.action_type {
             ActionType::Place { pos, block } => {
-                let cmd = format!("setblock {} {} {} {}", pos[0], pos[1], pos[2], block);
+                let world_pos = self.apply_offset(*pos);
+                let cmd = format!("setblock {} {} {} {}", world_pos[0], world_pos[1], world_pos[2], block);
                 self.bot.send_command(&cmd).await?;
                 println!(
                     "    {} Tick {}: place at [{}, {}, {}] = {}",
@@ -153,9 +310,10 @@ impl TestExecutor {
 
             ActionType::PlaceEach { blocks } => {
                 for placement in blocks {
+                    let world_pos = self.apply_offset(placement.pos);
                     let cmd = format!(
                         "setblock {} {} {} {}",
-                        placement.pos[0], placement.pos[1], placement.pos[2], placement.block
+                        world_pos[0], world_pos[1], world_pos[2], placement.block
                     );
                     self.bot.send_command(&cmd).await?;
                     println!(
@@ -173,10 +331,12 @@ impl TestExecutor {
             }
 
             ActionType::Fill { region, with } => {
+                let world_min = self.apply_offset(region[0]);
+                let world_max = self.apply_offset(region[1]);
                 let cmd = format!(
                     "fill {} {} {} {} {} {} {}",
-                    region[0][0], region[0][1], region[0][2],
-                    region[1][0], region[1][1], region[1][2],
+                    world_min[0], world_min[1], world_min[2],
+                    world_max[0], world_max[1], world_max[2],
                     with
                 );
                 self.bot.send_command(&cmd).await?;
@@ -196,7 +356,8 @@ impl TestExecutor {
             }
 
             ActionType::Remove { pos } => {
-                let cmd = format!("setblock {} {} {} air", pos[0], pos[1], pos[2]);
+                let world_pos = self.apply_offset(*pos);
+                let cmd = format!("setblock {} {} {} air", world_pos[0], world_pos[1], world_pos[2]);
                 self.bot.send_command(&cmd).await?;
                 println!(
                     "    {} Tick {}: remove at [{}, {}, {}]",
@@ -214,7 +375,8 @@ impl TestExecutor {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
                 for check in checks {
-                    let actual_block = self.bot.get_block(check.pos).await?;
+                    let world_pos = self.apply_offset(check.pos);
+                    let actual_block = self.bot.get_block(world_pos).await?;
 
                     let expected_name = check.is.trim_start_matches("minecraft:");
                     let success = if let Some(ref actual) = actual_block {
@@ -254,7 +416,8 @@ impl TestExecutor {
                 // Wait a moment for server to send block update
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-                let actual_value = self.bot.get_block_state_property(*pos, state).await?;
+                let world_pos = self.apply_offset(*pos);
+                let actual_value = self.bot.get_block_state_property(world_pos, state).await?;
                 let expected_value = &values[value_idx];
 
                 let success = if let Some(ref actual) = actual_value {

@@ -9,61 +9,61 @@
   ],
   "setup": {
     "cleanup": {
-      "region": [[30, 95, 30], [40, 105, 40]]
+      "region": [[0, 95, 0], [14, 105, 14]]
     }
   },
   "timeline": [
     {
       "at": 0,
       "do": "fill",
-      "region": [[35, 100, 35], [37, 100, 37]],
+      "region": [[5, 100, 5], [7, 100, 7]],
       "with": "minecraft:stone"
     },
     {
       "at": 1,
       "do": "place_each",
       "blocks": [
-        {"pos": [35, 101, 35], "block": "minecraft:redstone_wire"},
-        {"pos": [35, 101, 37], "block": "minecraft:redstone_wire"},
-        {"pos": [36, 101, 37], "block": "minecraft:redstone_wire"},
-        {"pos": [36, 101, 35], "block": "minecraft:redstone_wire"}
+        {"pos": [5, 101, 5], "block": "minecraft:redstone_wire"},
+        {"pos": [5, 101, 7], "block": "minecraft:redstone_wire"},
+        {"pos": [6, 101, 7], "block": "minecraft:redstone_wire"},
+        {"pos": [6, 101, 5], "block": "minecraft:redstone_wire"}
       ]
     },
     {
       "at": 2,
       "do": "place",
-      "pos": [35, 101, 36],
+      "pos": [5, 101, 6],
       "block": "minecraft:repeater[facing=south,delay=1]"
     },
     {
       "at": 3,
       "do": "place",
-      "pos": [36, 101, 36],
+      "pos": [6, 101, 6],
       "block": "minecraft:repeater[facing=north,delay=1]"
     },
     {
       "at": 4,
       "do": "assert",
       "checks": [
-        {"pos": [35, 101, 36], "is": "minecraft:repeater"},
-        {"pos": [36, 101, 36], "is": "minecraft:repeater"}
+        {"pos": [5, 101, 6], "is": "minecraft:repeater"},
+        {"pos": [6, 101, 6], "is": "minecraft:repeater"}
       ]
     },
     {
       "at": 5,
       "do": "place",
-      "pos": [37, 101, 35],
+      "pos": [7, 101, 5],
       "block": "minecraft:redstone_torch"
     },
     {
       "at": 6,
       "do": "remove",
-      "pos": [37, 101, 35]
+      "pos": [7, 101, 5]
     },
     {
       "at": [7, 8, 9, 10, 11],
       "do": "assert_state",
-      "pos": [36, 101, 36],
+      "pos": [6, 101, 6],
       "state": "powered",
       "values": ["false", "true", "false", "false", "true"]
     }

@@ -55,17 +55,20 @@ async fn main() -> Result<()> {
     executor.connect(&args.server).await?;
     println!("{} Connected successfully\n", "✓".green());
 
-    // Run all tests
-    let mut results = Vec::new();
-    for test_file in &test_files {
+    // Load all tests and calculate offsets
+    let total_tests = test_files.len();
+    let mut tests_with_offsets = Vec::new();
+
+    for (test_index, test_file) in test_files.iter().enumerate() {
         match test_spec::TestSpec::from_file(test_file) {
             Ok(test) => {
-                match executor.run_test(&test).await {
-                    Ok(result) => results.push(result),
-                    Err(e) => {
-                        eprintln!("{} Test execution failed: {}", "Error:".red().bold(), e);
-                    }
-                }
+                let offset = calculate_test_offset(test_index, total_tests);
+                println!("  {} Grid position: {} (offset: [{}, {}, {}])",
+                    "→".blue(),
+                    format!("[{}/{}]", test_index + 1, total_tests).dimmed(),
+                    offset[0], offset[1], offset[2]
+                );
+                tests_with_offsets.push((test, offset));
             }
             Err(e) => {
                 eprintln!(
@@ -74,9 +77,15 @@ async fn main() -> Result<()> {
                     test_file.display(),
                     e
                 );
+                std::process::exit(1);
             }
         }
     }
+
+    println!();
+
+    // Run all tests in parallel using merged timeline
+    let results = executor.run_tests_parallel(&tests_with_offsets).await?;
 
     // Print summary
     println!("\n{}", "═".repeat(60).dimmed());
@@ -144,4 +153,28 @@ fn collect_json_files_recursive(dir: &PathBuf, files: &mut Vec<PathBuf>) -> Resu
         }
     }
     Ok(())
+}
+
+/// Calculate grid offset for test at given index
+/// Tests are arranged in a square grid centered at (0, 0)
+/// Each cell is 16x16 blocks (15 test area + 1 spacing)
+fn calculate_test_offset(test_index: usize, total_tests: usize) -> [i32; 3] {
+    const CELL_SIZE: i32 = 16; // 15 blocks + 1 spacing
+
+    // Calculate grid size (ceil(sqrt(N)))
+    let grid_size = (total_tests as f64).sqrt().ceil() as i32;
+
+    // Calculate position in grid
+    let grid_x = (test_index as i32) % grid_size;
+    let grid_z = (test_index as i32) / grid_size;
+
+    // Calculate base offset to center the grid at (0, 0)
+    let base_offset = -(grid_size * CELL_SIZE) / 2;
+
+    // Calculate world offset for this test
+    [
+        base_offset + grid_x * CELL_SIZE,
+        0,
+        base_offset + grid_z * CELL_SIZE,
+    ]
 }
