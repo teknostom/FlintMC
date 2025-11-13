@@ -23,6 +23,46 @@ impl TestExecutor {
         ]
     }
 
+    /// Poll for a block at the given position with retries
+    /// This handles timing issues in CI environments where block updates may take longer
+    async fn poll_block_with_retry(&self, world_pos: [i32; 3], expected_block: &str, max_attempts: u32, delay_ms: u64) -> Result<Option<String>> {
+        let expected_name = expected_block.trim_start_matches("minecraft:").to_lowercase().replace("_", "");
+
+        for attempt in 0..max_attempts {
+            let block = self.bot.get_block(world_pos).await?;
+
+            // Check if the block matches what we expect
+            if let Some(ref actual) = block {
+                let actual_lower = actual.to_lowercase();
+                if actual_lower.contains(&expected_name) || actual_lower.replace("_", "").contains(&expected_name) {
+                    return Ok(block);
+                }
+            }
+
+            // If not the last attempt, wait before retrying
+            if attempt < max_attempts - 1 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+
+        // Return whatever we have after all retries
+        self.bot.get_block(world_pos).await
+    }
+
+    /// Poll for a block state property at the given position with retries
+    async fn poll_block_state_with_retry(&self, world_pos: [i32; 3], state: &str, max_attempts: u32, delay_ms: u64) -> Result<Option<String>> {
+        for attempt in 0..max_attempts {
+            let state_value = self.bot.get_block_state_property(world_pos, state).await?;
+            if state_value.is_some() {
+                return Ok(state_value);
+            }
+            if attempt < max_attempts - 1 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn connect(&mut self, server: &str) -> Result<()> {
         self.bot.connect(server).await
     }
@@ -368,12 +408,12 @@ impl TestExecutor {
             }
 
             ActionType::Assert { checks } => {
-                // Wait a moment for server to send block update
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
                 for check in checks {
                     let world_pos = self.apply_offset(check.pos, offset);
-                    let actual_block = self.bot.get_block(world_pos).await?;
+
+                    // Poll with retries: 10 attempts, 50ms apart = up to 500ms total
+                    // This handles timing issues in CI environments
+                    let actual_block = self.poll_block_with_retry(world_pos, &check.is, 10, 50).await?;
 
                     let expected_name = check.is.trim_start_matches("minecraft:");
                     let success = if let Some(ref actual) = actual_block {
@@ -410,12 +450,12 @@ impl TestExecutor {
             }
 
             ActionType::AssertState { pos, state, values } => {
-                // Wait a moment for server to send block update
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
                 let world_pos = self.apply_offset(*pos, offset);
-                let actual_value = self.bot.get_block_state_property(world_pos, state).await?;
                 let expected_value = &values[value_idx];
+
+                // Poll with retries: 10 attempts, 50ms apart = up to 500ms total
+                // This handles timing issues in CI environments
+                let actual_value = self.poll_block_state_with_retry(world_pos, state, 10, 50).await?;
 
                 let success = if let Some(ref actual) = actual_value {
                     actual.contains(expected_value)
