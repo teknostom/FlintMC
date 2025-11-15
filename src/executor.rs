@@ -3,30 +3,112 @@ use crate::test_spec::{ActionType, TestSpec, TimelineEntry};
 use anyhow::Result;
 use colored::Colorize;
 use std::collections::HashMap;
+use std::io::{self, Write};
 
 pub struct TestExecutor {
     bot: TestBot,
+    use_chat_control: bool,
+}
+
+impl Default for TestExecutor {
+    fn default() -> Self {
+        Self {
+            bot: TestBot::new(),
+            use_chat_control: false,
+        }
+    }
 }
 
 impl TestExecutor {
     pub fn new() -> Self {
-        Self {
-            bot: TestBot::new(),
+        Self::default()
+    }
+
+    pub fn set_chat_control(&mut self, enabled: bool) {
+        self.use_chat_control = enabled;
+    }
+
+    /// Returns true to continue, false to step to next tick only
+    async fn wait_for_step(&mut self, reason: &str) -> Result<bool> {
+        println!(
+            "\n{} {} {}",
+            "⏸".yellow().bold(),
+            "BREAKPOINT:".yellow().bold(),
+            reason
+        );
+
+        if self.use_chat_control {
+            println!(
+                "  Waiting for in-game chat command: {} = step, {} = continue",
+                "s".cyan().bold(),
+                "c".cyan().bold()
+            );
+
+            // First, drain any old messages from the chat queue
+            while self
+                .bot
+                .recv_chat_timeout(std::time::Duration::from_millis(10))
+                .await
+                .is_some()
+            {
+                // Discard old messages
+            }
+
+            // Now wait for a fresh chat command
+            loop {
+                if let Some(message) = self
+                    .bot
+                    .recv_chat_timeout(std::time::Duration::from_millis(100))
+                    .await
+                {
+                    // Look for commands in the message
+                    let msg_lower = message.to_lowercase();
+                    if msg_lower.contains(" s") || msg_lower.contains(" step") {
+                        println!("  {} Received 's' from chat", "→".blue());
+                        return Ok(false); // Step mode
+                    } else if msg_lower.contains(" c") || msg_lower.contains(" continue") {
+                        println!("  {} Received 'c' from chat", "→".blue());
+                        return Ok(true); // Continue mode
+                    }
+                }
+            }
+        } else {
+            println!(
+                "  Commands: {} = step one tick, {} = continue to next breakpoint",
+                "s".cyan().bold(),
+                "c".cyan().bold()
+            );
+            print!("  > ");
+            io::stdout().flush()?;
+
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let cmd = input.trim().to_lowercase();
+
+            match cmd.as_str() {
+                "s" | "step" => Ok(false), // Step mode: only advance one tick
+                _ => Ok(true),             // Continue mode (default for Enter or "c")
+            }
         }
     }
 
     fn apply_offset(&self, pos: [i32; 3], offset: [i32; 3]) -> [i32; 3] {
-        [
-            pos[0] + offset[0],
-            pos[1] + offset[1],
-            pos[2] + offset[2],
-        ]
+        [pos[0] + offset[0], pos[1] + offset[1], pos[2] + offset[2]]
     }
 
     /// Poll for a block at the given position with retries
     /// This handles timing issues in CI environments where block updates may take longer
-    async fn poll_block_with_retry(&self, world_pos: [i32; 3], expected_block: &str, max_attempts: u32, delay_ms: u64) -> Result<Option<String>> {
-        let expected_name = expected_block.trim_start_matches("minecraft:").to_lowercase().replace("_", "");
+    async fn poll_block_with_retry(
+        &self,
+        world_pos: [i32; 3],
+        expected_block: &str,
+        max_attempts: u32,
+        delay_ms: u64,
+    ) -> Result<Option<String>> {
+        let expected_name = expected_block
+            .trim_start_matches("minecraft:")
+            .to_lowercase()
+            .replace("_", "");
 
         for attempt in 0..max_attempts {
             let block = self.bot.get_block(world_pos).await?;
@@ -34,7 +116,9 @@ impl TestExecutor {
             // Check if the block matches what we expect
             if let Some(ref actual) = block {
                 let actual_lower = actual.to_lowercase();
-                if actual_lower.contains(&expected_name) || actual_lower.replace("_", "").contains(&expected_name) {
+                if actual_lower.contains(&expected_name)
+                    || actual_lower.replace("_", "").contains(&expected_name)
+                {
                     return Ok(block);
                 }
             }
@@ -50,7 +134,13 @@ impl TestExecutor {
     }
 
     /// Poll for a block state property at the given position with retries
-    async fn poll_block_state_with_retry(&self, world_pos: [i32; 3], state: &str, max_attempts: u32, delay_ms: u64) -> Result<Option<String>> {
+    async fn poll_block_state_with_retry(
+        &self,
+        world_pos: [i32; 3],
+        state: &str,
+        max_attempts: u32,
+        delay_ms: u64,
+    ) -> Result<Option<String>> {
         for attempt in 0..max_attempts {
             let state_value = self.bot.get_block_state_property(world_pos, state).await?;
             if state_value.is_some() {
@@ -67,17 +157,31 @@ impl TestExecutor {
         self.bot.connect(server).await
     }
 
-    pub async fn run_tests_parallel(&mut self, tests_with_offsets: &[(TestSpec, [i32; 3])]) -> Result<Vec<TestResult>> {
-        println!("{} Running {} tests in parallel\n", "→".blue().bold(), tests_with_offsets.len());
+    pub async fn run_tests_parallel(
+        &mut self,
+        tests_with_offsets: &[(TestSpec, [i32; 3])],
+        break_after_setup: bool,
+    ) -> Result<Vec<TestResult>> {
+        println!(
+            "{} Running {} tests in parallel\n",
+            "→".blue().bold(),
+            tests_with_offsets.len()
+        );
 
         // Build global merged timeline
         let mut global_timeline: HashMap<u32, Vec<(usize, &TimelineEntry, usize)>> = HashMap::new();
         let mut max_global_tick = 0;
+        let mut all_breakpoints = std::collections::HashSet::new();
 
         for (test_idx, (test, _offset)) in tests_with_offsets.iter().enumerate() {
             let max_tick = test.max_tick();
             if max_tick > max_global_tick {
                 max_global_tick = max_tick;
+            }
+
+            // Collect breakpoints from this test
+            for &bp in &test.breakpoints {
+                all_breakpoints.insert(bp);
             }
 
             // Expand timeline entries with multiple ticks
@@ -86,25 +190,37 @@ impl TestExecutor {
                 for (value_idx, tick) in ticks.iter().enumerate() {
                     global_timeline
                         .entry(*tick)
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push((test_idx, entry, value_idx));
                 }
             }
         }
 
         println!("  Global timeline: {} ticks", max_global_tick);
-        println!("  {} unique tick steps with actions\n", global_timeline.len());
+        println!("  {} unique tick steps with actions", global_timeline.len());
+        if !all_breakpoints.is_empty() {
+            let mut sorted_breakpoints: Vec<_> = all_breakpoints.iter().collect();
+            sorted_breakpoints.sort();
+            println!(
+                "  {} breakpoints at ticks: {:?}",
+                all_breakpoints.len(),
+                sorted_breakpoints
+            );
+        }
+        if break_after_setup {
+            println!("  {} Break after setup enabled", "→".yellow());
+        }
+        println!();
 
         // Clean all test areas before starting
         println!("{} Cleaning all test areas...", "→".blue());
-        for (_test_idx, (test, offset)) in tests_with_offsets.iter().enumerate() {
+        for (test, offset) in tests_with_offsets.iter() {
             let region = test.cleanup_region();
             let world_min = self.apply_offset(region[0], *offset);
             let world_max = self.apply_offset(region[1], *offset);
             let cmd = format!(
                 "fill {} {} {} {} {} {} air",
-                world_min[0], world_min[1], world_min[2],
-                world_max[0], world_max[1], world_max[2]
+                world_min[0], world_min[1], world_min[2], world_max[0], world_max[1], world_max[2]
             );
             self.bot.send_command(&cmd).await?;
         }
@@ -113,6 +229,15 @@ impl TestExecutor {
         // Freeze time globally
         self.bot.send_command("tick freeze").await?;
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Break after setup if requested
+        let mut stepping_mode = false;
+        if break_after_setup {
+            let should_continue = self
+                .wait_for_step("After test setup (cleanup complete, time frozen)")
+                .await?;
+            stepping_mode = !should_continue;
+        }
 
         // Track results per test
         let mut test_results: Vec<(usize, usize)> = vec![(0, 0); tests_with_offsets.len()]; // (passed, failed)
@@ -124,7 +249,10 @@ impl TestExecutor {
                 for (test_idx, entry, value_idx) in entries {
                     let (test, offset) = &tests_with_offsets[*test_idx];
 
-                    match self.execute_action(current_tick, entry, *value_idx, *offset).await {
+                    match self
+                        .execute_action(current_tick, entry, *value_idx, *offset)
+                        .await
+                    {
                         Ok(true) => {
                             test_results[*test_idx].0 += 1; // increment passed
                         }
@@ -145,6 +273,18 @@ impl TestExecutor {
                 }
             }
 
+            // Check for breakpoint at end of this tick (before stepping)
+            // Or if we're in stepping mode, break at every tick
+            if all_breakpoints.contains(&current_tick) || stepping_mode {
+                let should_continue = self
+                    .wait_for_step(&format!(
+                        "End of tick {} (before step to next tick)",
+                        current_tick
+                    ))
+                    .await?;
+                stepping_mode = !should_continue;
+            }
+
             // Step to next tick
             if current_tick < max_global_tick {
                 self.bot.send_command("tick step 1").await?;
@@ -158,14 +298,13 @@ impl TestExecutor {
 
         // Clean all test areas after completion
         println!("\n{} Cleaning up all test areas...", "→".blue());
-        for (_test_idx, (test, offset)) in tests_with_offsets.iter().enumerate() {
+        for (test, offset) in tests_with_offsets.iter() {
             let region = test.cleanup_region();
             let world_min = self.apply_offset(region[0], *offset);
             let world_max = self.apply_offset(region[1], *offset);
             let cmd = format!(
                 "fill {} {} {} {} {} {} air",
-                world_min[0], world_min[1], world_min[2],
-                world_max[0], world_max[1], world_max[2]
+                world_min[0], world_min[1], world_min[2], world_max[0], world_max[1], world_max[2]
             );
             self.bot.send_command(&cmd).await?;
         }
@@ -181,7 +320,12 @@ impl TestExecutor {
 
                 println!();
                 if success {
-                    println!("  {} [{}] Test passed: {} assertions", "✓".green().bold(), test.name, passed);
+                    println!(
+                        "  {} [{}] Test passed: {} assertions",
+                        "✓".green().bold(),
+                        test.name,
+                        passed
+                    );
                 } else {
                     println!(
                         "  {} [{}] Test failed: {} passed, {} failed",
@@ -194,8 +338,6 @@ impl TestExecutor {
 
                 TestResult {
                     test_name: test.name.clone(),
-                    passed,
-                    failed,
                     success,
                 }
             })
@@ -204,134 +346,20 @@ impl TestExecutor {
         Ok(results)
     }
 
-    #[allow(dead_code)]
-    pub async fn run_test(&mut self, test: &TestSpec) -> Result<TestResult> {
-        self.run_test_with_offset(test, [0, 0, 0]).await
-    }
-
-    #[allow(dead_code)]
-    pub async fn run_test_with_offset(&mut self, test: &TestSpec, offset: [i32; 3]) -> Result<TestResult> {
-        println!("\n{} {}", "Running test:".cyan().bold(), test.name.bold());
-        if let Some(desc) = &test.description {
-            println!("  {}", desc.dimmed());
-        }
-
-        let max_tick = test.max_tick();
-        println!("  Timeline: {} ticks\n", max_tick);
-
-        // Clean up test area before test
-        let region = test.cleanup_region();
-        let world_min = self.apply_offset(region[0], offset);
-        let world_max = self.apply_offset(region[1], offset);
-        println!("  {} Cleaning test area...", "→".blue());
-        let cmd = format!(
-            "fill {} {} {} {} {} {} air",
-            world_min[0], world_min[1], world_min[2],
-            world_max[0], world_max[1], world_max[2]
-        );
-        self.bot.send_command(&cmd).await?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-        // Expand timeline entries with multiple ticks into separate entries
-        let mut expanded_entries = Vec::new();
-        for entry in &test.timeline {
-            let ticks = entry.at.to_vec();
-            for (idx, tick) in ticks.iter().enumerate() {
-                expanded_entries.push((*tick, entry, idx));
-            }
-        }
-
-        // Group by tick
-        let mut actions_by_tick: HashMap<u32, Vec<(&TimelineEntry, usize)>> = HashMap::new();
-        for (tick, entry, idx) in expanded_entries {
-            actions_by_tick
-                .entry(tick)
-                .or_insert_with(Vec::new)
-                .push((entry, idx));
-        }
-
-        // Freeze time
-        self.bot.send_command("tick freeze").await?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        let mut current_tick = 0;
-        let mut passed = 0;
-        let mut failed = 0;
-
-        // Execute actions tick by tick
-        while current_tick <= max_tick {
-            if let Some(entries) = actions_by_tick.get(&current_tick) {
-                for (entry, value_idx) in entries {
-                    match self.execute_action(current_tick, entry, *value_idx, offset).await {
-                        Ok(true) => {
-                            passed += 1;
-                        }
-                        Ok(false) => {
-                            // Non-assertion action
-                        }
-                        Err(e) => {
-                            failed += 1;
-                            println!(
-                                "    {} Tick {}: {}",
-                                "✗".red().bold(),
-                                current_tick,
-                                e.to_string().red()
-                            );
-                        }
-                    }
-                }
-            }
-
-            // Step to next tick
-            if current_tick < max_tick {
-                self.bot.send_command("tick step 1").await?;
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-            }
-            current_tick += 1;
-        }
-
-        // Unfreeze time
-        self.bot.send_command("tick unfreeze").await?;
-
-        // Clean up test area after test
-        let region = test.cleanup_region();
-        let world_min = self.apply_offset(region[0], offset);
-        let world_max = self.apply_offset(region[1], offset);
-        println!("\n  {} Cleaning up test area...", "→".blue());
-        let cmd = format!(
-            "fill {} {} {} {} {} {} air",
-            world_min[0], world_min[1], world_min[2],
-            world_max[0], world_max[1], world_max[2]
-        );
-        self.bot.send_command(&cmd).await?;
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-        let success = failed == 0;
-        println!();
-        if success {
-            println!("  {} Test passed: {} assertions", "✓".green().bold(), passed);
-        } else {
-            println!(
-                "  {} Test failed: {} passed, {} failed",
-                "✗".red().bold(),
-                passed,
-                failed
-            );
-        }
-
-        Ok(TestResult {
-            test_name: test.name.clone(),
-            passed,
-            failed,
-            success,
-        })
-    }
-
-    async fn execute_action(&mut self, tick: u32, entry: &TimelineEntry, value_idx: usize, offset: [i32; 3]) -> Result<bool> {
+    async fn execute_action(
+        &mut self,
+        tick: u32,
+        entry: &TimelineEntry,
+        value_idx: usize,
+        offset: [i32; 3],
+    ) -> Result<bool> {
         match &entry.action_type {
             ActionType::Place { pos, block } => {
                 let world_pos = self.apply_offset(*pos, offset);
-                let cmd = format!("setblock {} {} {} {}", world_pos[0], world_pos[1], world_pos[2], block);
+                let cmd = format!(
+                    "setblock {} {} {} {}",
+                    world_pos[0], world_pos[1], world_pos[2], block
+                );
                 self.bot.send_command(&cmd).await?;
                 println!(
                     "    {} Tick {}: place at [{}, {}, {}] = {}",
@@ -372,8 +400,12 @@ impl TestExecutor {
                 let world_max = self.apply_offset(region[1], offset);
                 let cmd = format!(
                     "fill {} {} {} {} {} {} {}",
-                    world_min[0], world_min[1], world_min[2],
-                    world_max[0], world_max[1], world_max[2],
+                    world_min[0],
+                    world_min[1],
+                    world_min[2],
+                    world_max[0],
+                    world_max[1],
+                    world_max[2],
                     with
                 );
                 self.bot.send_command(&cmd).await?;
@@ -394,7 +426,10 @@ impl TestExecutor {
 
             ActionType::Remove { pos } => {
                 let world_pos = self.apply_offset(*pos, offset);
-                let cmd = format!("setblock {} {} {} air", world_pos[0], world_pos[1], world_pos[2]);
+                let cmd = format!(
+                    "setblock {} {} {} air",
+                    world_pos[0], world_pos[1], world_pos[2]
+                );
                 self.bot.send_command(&cmd).await?;
                 println!(
                     "    {} Tick {}: remove at [{}, {}, {}]",
@@ -413,14 +448,16 @@ impl TestExecutor {
 
                     // Poll with retries: 10 attempts, 50ms apart = up to 500ms total
                     // This handles timing issues in CI environments
-                    let actual_block = self.poll_block_with_retry(world_pos, &check.is, 10, 50).await?;
+                    let actual_block = self
+                        .poll_block_with_retry(world_pos, &check.is, 10, 50)
+                        .await?;
 
                     let expected_name = check.is.trim_start_matches("minecraft:");
                     let success = if let Some(ref actual) = actual_block {
                         let actual_lower = actual.to_lowercase();
                         let expected_lower = expected_name.to_lowercase().replace("_", "");
-                        actual_lower.contains(&expected_lower) ||
-                        actual_lower.replace("_", "").contains(&expected_lower)
+                        actual_lower.contains(&expected_lower)
+                            || actual_lower.replace("_", "").contains(&expected_lower)
                     } else {
                         false
                     };
@@ -455,7 +492,9 @@ impl TestExecutor {
 
                 // Poll with retries: 10 attempts, 50ms apart = up to 500ms total
                 // This handles timing issues in CI environments
-                let actual_value = self.poll_block_state_with_retry(world_pos, state, 10, 50).await?;
+                let actual_value = self
+                    .poll_block_state_with_retry(world_pos, state, 10, 50)
+                    .await?;
 
                 let success = if let Some(ref actual) = actual_value {
                     actual.contains(expected_value)
@@ -494,9 +533,5 @@ impl TestExecutor {
 #[derive(Debug)]
 pub struct TestResult {
     pub test_name: String,
-    #[allow(dead_code)]
-    pub passed: usize,
-    #[allow(dead_code)]
-    pub failed: usize,
     pub success: bool,
 }

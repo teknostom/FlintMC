@@ -1,13 +1,15 @@
-use azalea::prelude::*;
 use anyhow::Result;
+use azalea::prelude::*;
+use parking_lot::RwLock;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use parking_lot::RwLock;
+use tokio::sync::mpsc;
 
 #[derive(Clone, Component)]
 struct State {
     client_handle: Arc<RwLock<Option<Client>>>,
     in_game: Arc<AtomicBool>,
+    chat_tx: Option<mpsc::UnboundedSender<String>>,
 }
 
 impl Default for State {
@@ -15,21 +17,21 @@ impl Default for State {
         Self {
             client_handle: Arc::new(RwLock::new(None)),
             in_game: Arc::new(AtomicBool::new(false)),
+            chat_tx: None,
         }
     }
 }
 
+#[derive(Default)]
 pub struct TestBot {
     client: Option<Arc<RwLock<Option<Client>>>>,
     in_game: Option<Arc<AtomicBool>>,
+    chat_rx: Option<mpsc::UnboundedReceiver<String>>,
 }
 
 impl TestBot {
     pub fn new() -> Self {
-        Self {
-            client: None,
-            in_game: None,
-        }
+        Self::default()
     }
 
     pub async fn connect(&mut self, server: &str) -> Result<()> {
@@ -37,7 +39,13 @@ impl TestBot {
 
         tracing::info!("Connecting to server: {}", server);
 
-        let state = State::default();
+        // Create chat channel
+        let (chat_tx, chat_rx) = mpsc::unbounded_channel();
+
+        let state = State {
+            chat_tx: Some(chat_tx),
+            ..Default::default()
+        };
         let client_handle = state.client_handle.clone();
         let in_game = state.in_game.clone();
 
@@ -54,6 +62,13 @@ impl TestBot {
                         // Login event means we're fully in the game state
                         state.in_game.store(true, Ordering::SeqCst);
                         tracing::info!("Bot in game state");
+                    }
+                    Event::Chat(m) => {
+                        // Extract the message content and send it through the channel
+                        let message = m.message().to_string();
+                        if let Some(ref tx) = state.chat_tx {
+                            let _ = tx.send(message);
+                        }
                     }
                     _ => {}
                 }
@@ -98,12 +113,25 @@ impl TestBot {
 
         self.client = Some(client_handle);
         self.in_game = Some(in_game);
+        self.chat_rx = Some(chat_rx);
         tracing::info!("Connected successfully and in game state");
 
         // Give a small amount of extra time for world data to sync
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
         Ok(())
+    }
+
+    /// Wait for a chat message with timeout
+    pub async fn recv_chat_timeout(&mut self, timeout: std::time::Duration) -> Option<String> {
+        if let Some(ref mut rx) = self.chat_rx {
+            tokio::time::timeout(timeout, rx.recv())
+                .await
+                .ok()
+                .flatten()
+        } else {
+            None
+        }
     }
 
     pub async fn send_command(&self, command: &str) -> Result<()> {
@@ -149,7 +177,11 @@ impl TestBot {
         }
     }
 
-    pub async fn get_block_state_property(&self, pos: [i32; 3], property: &str) -> Result<Option<String>> {
+    pub async fn get_block_state_property(
+        &self,
+        pos: [i32; 3],
+        property: &str,
+    ) -> Result<Option<String>> {
         if let Some(client_handle) = &self.client {
             if let Some(client) = client_handle.read().as_ref() {
                 let block_pos = azalea::BlockPos::new(pos[0], pos[1], pos[2]);

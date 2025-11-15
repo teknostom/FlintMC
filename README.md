@@ -39,6 +39,35 @@ cargo run -- example_tests/ --server localhost:25565
 cargo run -- example_tests/ --server localhost:25565 --recursive
 ```
 
+### Debugging with breakpoints and stepping:
+```bash
+# Break after test setup (cleanup) to inspect the initial state
+cargo run -- example_tests/breakpoint_demo.json --server localhost:25565 --break-after-setup
+
+# Tests can also define breakpoints in their JSON to pause at specific ticks
+# See example_tests/breakpoint_demo.json
+
+# Use in-game chat for control (type 's' or 'c' in Minecraft chat)
+cargo run -- example_tests/breakpoint_demo.json --server localhost:25565 --break-after-setup --chat-control
+```
+
+When a breakpoint is hit, you have two options:
+- **`s` (step)**: Execute only the next tick, then break again. Useful for step-by-step debugging.
+- **`c` (continue)** or **Enter**: Continue execution until the next breakpoint or test completion.
+
+**Chat Control Mode** (`--chat-control`):
+- Instead of typing commands in the terminal, type them in Minecraft chat
+- Join the server and type `s` or `c` in chat when at a breakpoint
+- Perfect for inspecting blocks in-game while stepping through the test
+- Commands must be separate chat messages (e.g., just type `s` and press Enter)
+
+Example stepping workflow:
+1. Test hits breakpoint after setup
+2. Type `s` (in terminal or chat) to step through tick 0
+3. Type `s` again to step through tick 1
+4. Type `c` to continue to the next breakpoint
+5. Type `c` to finish the test
+
 ## Test Format
 
 Each test is a JSON file with the following structure:
@@ -55,6 +84,7 @@ Each test is a JSON file with the following structure:
       "region": [[x1, y1, z1], [x2, y2, z2]]
     }
   },
+  "breakpoints": [1, 3],
   "timeline": [
     {
       "at": 0,
@@ -78,6 +108,8 @@ The `setup.cleanup` field is optional. If specified, the framework will:
 2. Fill the area with air **after** the test completes
 
 This ensures tests don't interfere with each other.
+
+The `breakpoints` field is optional. If specified, execution will pause at the end of each listed tick, before stepping to the next tick. This allows you to manually inspect the world state in-game during test execution.
 
 ## Available Actions
 

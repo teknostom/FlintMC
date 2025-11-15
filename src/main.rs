@@ -23,6 +23,14 @@ struct Args {
     /// Recursively search directories for test files
     #[arg(short, long)]
     recursive: bool,
+
+    /// Break after test setup (cleanup phase) to allow manual inspection
+    #[arg(long)]
+    break_after_setup: bool,
+
+    /// Use in-game chat for breakpoint control (type 's' or 'c' in chat)
+    #[arg(long)]
+    chat_control: bool,
 }
 
 #[tokio::main]
@@ -43,7 +51,11 @@ async fn main() -> Result<()> {
     let test_files = collect_test_files(&args.path, args.recursive)?;
 
     if test_files.is_empty() {
-        eprintln!("{} No test files found at: {}", "Error:".red().bold(), args.path.display());
+        eprintln!(
+            "{} No test files found at: {}",
+            "Error:".red().bold(),
+            args.path.display()
+        );
         std::process::exit(1);
     }
 
@@ -51,6 +63,16 @@ async fn main() -> Result<()> {
 
     // Connect to server
     let mut executor = executor::TestExecutor::new();
+
+    // Enable chat control if requested
+    if args.chat_control {
+        executor.set_chat_control(true);
+        println!(
+            "{} Chat control enabled - you can type 's' or 'c' in game chat",
+            "→".yellow()
+        );
+    }
+
     println!("{} Connecting to {}...", "→".blue(), args.server);
     executor.connect(&args.server).await?;
     println!("{} Connected successfully\n", "✓".green());
@@ -63,10 +85,13 @@ async fn main() -> Result<()> {
         match test_spec::TestSpec::from_file(test_file) {
             Ok(test) => {
                 let offset = calculate_test_offset(test_index, total_tests);
-                println!("  {} Grid position: {} (offset: [{}, {}, {}])",
+                println!(
+                    "  {} Grid position: {} (offset: [{}, {}, {}])",
                     "→".blue(),
                     format!("[{}/{}]", test_index + 1, total_tests).dimmed(),
-                    offset[0], offset[1], offset[2]
+                    offset[0],
+                    offset[1],
+                    offset[2]
                 );
                 tests_with_offsets.push((test, offset));
             }
@@ -85,7 +110,9 @@ async fn main() -> Result<()> {
     println!();
 
     // Run all tests in parallel using merged timeline
-    let results = executor.run_tests_parallel(&tests_with_offsets).await?;
+    let results = executor
+        .run_tests_parallel(&tests_with_offsets, args.break_after_setup)
+        .await?;
 
     // Print summary
     println!("\n{}", "═".repeat(60).dimmed());
@@ -104,7 +131,8 @@ async fn main() -> Result<()> {
         println!("  [{}] {}", status, result.test_name);
     }
 
-    println!("\n{} tests run: {} passed, {} failed\n",
+    println!(
+        "\n{} tests run: {} passed, {} failed\n",
         results.len(),
         total_passed.to_string().green(),
         total_failed.to_string().red()

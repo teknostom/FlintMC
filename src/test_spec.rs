@@ -15,6 +15,8 @@ pub struct TestSpec {
     #[serde(default)]
     pub setup: Option<SetupSpec>,
     pub timeline: Vec<TimelineEntry>,
+    #[serde(default)]
+    pub breakpoints: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,8 +33,6 @@ pub struct CleanupSpec {
 pub struct TimelineEntry {
     #[serde(rename = "at")]
     pub at: TickSpec,
-    #[serde(rename = "do")]
-    pub action_name: String,
     #[serde(flatten)]
     pub action_type: ActionType,
 }
@@ -54,7 +54,7 @@ impl TickSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "do", rename_all = "snake_case")]
 pub enum ActionType {
     Place {
         pos: [i32; 3],
@@ -122,8 +122,9 @@ impl TestSpec {
 
     pub fn validate(&self) -> anyhow::Result<()> {
         // Ensure setup with cleanup is present
-        let setup = self.setup.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Test '{}' missing required 'setup' section", self.name))?;
+        let setup = self.setup.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Test '{}' missing required 'setup' section", self.name)
+        })?;
 
         let region = setup.cleanup.region;
         let min = region[0];
@@ -138,7 +139,13 @@ impl TestSpec {
         if min[0] > max[0] || min[1] > max[1] || min[2] > max[2] {
             anyhow::bail!(
                 "Test '{}': Invalid cleanup region - min coordinates must be <= max coordinates. Got min=[{},{},{}], max=[{},{},{}]",
-                self.name, min[0], min[1], min[2], max[0], max[1], max[2]
+                self.name,
+                min[0],
+                min[1],
+                min[2],
+                max[0],
+                max[1],
+                max[2]
             );
         }
 
@@ -146,19 +153,25 @@ impl TestSpec {
         if width > Self::MAX_WIDTH {
             anyhow::bail!(
                 "Test '{}': Cleanup region width {} exceeds maximum {}",
-                self.name, width, Self::MAX_WIDTH
+                self.name,
+                width,
+                Self::MAX_WIDTH
             );
         }
         if height > Self::MAX_HEIGHT {
             anyhow::bail!(
                 "Test '{}': Cleanup region height {} exceeds maximum {}",
-                self.name, height, Self::MAX_HEIGHT
+                self.name,
+                height,
+                Self::MAX_HEIGHT
             );
         }
         if depth > Self::MAX_DEPTH {
             anyhow::bail!(
                 "Test '{}': Cleanup region depth {} exceeds maximum {}",
-                self.name, depth, Self::MAX_DEPTH
+                self.name,
+                depth,
+                Self::MAX_DEPTH
             );
         }
 
@@ -173,7 +186,10 @@ impl TestSpec {
                         self.validate_position(block.pos, &region)?;
                     }
                 }
-                ActionType::Fill { region: fill_region, .. } => {
+                ActionType::Fill {
+                    region: fill_region,
+                    ..
+                } => {
                     self.validate_position(fill_region[0], &region)?;
                     self.validate_position(fill_region[1], &region)?;
                 }
@@ -198,15 +214,25 @@ impl TestSpec {
         let min = region[0];
         let max = region[1];
 
-        if pos[0] < min[0] || pos[0] > max[0] ||
-           pos[1] < min[1] || pos[1] > max[1] ||
-           pos[2] < min[2] || pos[2] > max[2] {
+        if pos[0] < min[0]
+            || pos[0] > max[0]
+            || pos[1] < min[1]
+            || pos[1] > max[1]
+            || pos[2] < min[2]
+            || pos[2] > max[2]
+        {
             anyhow::bail!(
                 "Test '{}': Position [{},{},{}] is outside cleanup region [{},{},{}] to [{},{},{}]",
                 self.name,
-                pos[0], pos[1], pos[2],
-                min[0], min[1], min[2],
-                max[0], max[1], max[2]
+                pos[0],
+                pos[1],
+                pos[2],
+                min[0],
+                min[1],
+                min[2],
+                max[0],
+                max[1],
+                max[2]
             );
         }
         Ok(())
