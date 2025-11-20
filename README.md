@@ -1,6 +1,6 @@
 # FlintCLI
 
-A command-line interface for running [Flint](https://github.com/FlintTestMC/flint-core) tests against Minecraft servers. FlintCLI uses Azalea to connect to servers and execute tests deterministically using Minecraft's `/tick` command.
+A command-line interface for running [Flint](https://github.com/FlintTestMC/flint-core) tests against Minecraft servers. FlintCLI uses [Azalea](https://github.com/azalea-rs/azalea) to connect to servers and execute tests deterministically using Minecraft's `/tick` command.
 
 ## About Flint
 
